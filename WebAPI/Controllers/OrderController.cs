@@ -1,73 +1,100 @@
-﻿using Application.Interfaces;
-using Application.Order.Interfaces;
-using AutoMapper;
-using Domain.Order.Entities;
+﻿using Domain.Order.Entities;
+using Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
-using System.Collections.Generic;
-using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 
-using Application.Order.DTOs;
-
-namespace WebAPI.Controllers
+[ApiController]
+[Route("api/[controller]")]
+public class OrdersController : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class OrdersController : ControllerBase
+    private readonly AppDbContext _context;
+
+    public OrdersController(AppDbContext context)
     {
-        private readonly IOrderService _orderService;
-        private readonly IMapper _mapper;
+        _context = context;
+    }
 
-        public OrdersController(IOrderService orderService, IMapper mapper)
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<Order>>> GetOrders()
+    {
+        return await _context.Orders
+            .Include(o => o.OrderItems)
+            .ThenInclude(oi => oi.Product)
+            .ToListAsync();
+    }
+
+    [HttpGet("{id}")]
+    public async Task<ActionResult<Order>> GetOrder(int id)
+    {
+        var order = await _context.Orders
+            .Include(o => o.OrderItems)
+            .ThenInclude(oi => oi.Product)
+            .FirstOrDefaultAsync(o => o.Id == id);
+
+        if (order == null)
         {
-            _orderService = orderService;
-            _mapper = mapper;
+            return NotFound();
         }
 
-        [HttpGet]
-        public async Task<ActionResult<IEnumerable<OrderDto>>> GetOrders()
+        return order;
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<Order>> CreateOrder(Order order)
+    {
+        foreach (var item in order.OrderItems)
         {
-            var orders = await _orderService.GetAllAsync();
-            var orderDtos = _mapper.Map<IEnumerable<OrderDto>>(orders);
-            return Ok(orderDtos);
+            if (!await _context.Products.AnyAsync(p => p.Id == item.ProductId))
+            {
+                return BadRequest($"ProductId {item.ProductId} does not exist.");
+            }
         }
 
-        [HttpGet("{id}")]
-        public async Task<ActionResult<OrderDto>> GetOrder(int id)
+        _context.Orders.Add(order);
+        await _context.SaveChangesAsync();
+
+        return CreatedAtAction(nameof(GetOrder), new { id = order.Id }, order);
+    }
+
+    [HttpPut("{id}")]
+    public async Task<IActionResult> UpdateOrder(int id, Order order)
+    {
+        if (id != order.Id)
         {
-            var order = await _orderService.GetByIdAsync(id);
-            if (order == null)
+            return BadRequest();
+        }
+
+        foreach (var item in order.OrderItems)
+        {
+            if (!await _context.Products.AnyAsync(p => p.Id == item.ProductId))
+            {
+                return BadRequest($"ProductId {item.ProductId} does not exist.");
+            }
+        }
+
+        _context.Entry(order).State = EntityState.Modified;
+
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            if (!OrderExists(id))
             {
                 return NotFound();
             }
-            var orderDto = _mapper.Map<OrderDto>(order);
-            return Ok(orderDto);
-        }
-
-        [HttpPost]
-        public async Task<ActionResult<OrderDto>> CreateOrder(OrderDto orderDto)
-        {
-            var order = _mapper.Map<Order>(orderDto);
-            await _orderService.AddAsync(order);
-            return CreatedAtAction(nameof(GetOrder), new { id = order.Id }, orderDto);
-        }
-
-        [HttpPut("{id}")]
-        public async Task<IActionResult> UpdateOrder(int id, OrderDto orderDto)
-        {
-            if (id != orderDto.Id)
+            else
             {
-                return BadRequest();
+                throw;
             }
-            var order = _mapper.Map<Order>(orderDto);
-            await _orderService.UpdateAsync(order);
-            return NoContent();
         }
 
-        [HttpDelete("{id}")]
-        public async Task<IActionResult> DeleteOrder(int id)
-        {
-            await _orderService.DeleteAsync(id);
-            return NoContent();
-        }
+        return NoContent();
+    }
+
+    private bool OrderExists(int id)
+    {
+        return _context.Orders.Any(e => e.Id == id);
     }
 }
